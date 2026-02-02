@@ -156,29 +156,29 @@ def plot_evolution_line_bar(df_grouped, title):
 def init_firestore():
     if not firebase_admin._apps:
         try:
-            # 1. Tenta carregar do Streamlit Secrets (Produção)
+            # Tenta carregar do Streamlit Secrets
             if "FIREBASE_CREDENTIALS" in st.secrets:
-                # Converte o objeto TOML nativo do Streamlit para um dicionário Python
+                # Converte para dicionário normal para podermos editar
                 key_dict = dict(st.secrets["FIREBASE_CREDENTIALS"])
                 
-                # Correção comum: às vezes o TOML interpreta \n como string literal. 
-                # Isso garante que as quebras de linha da chave privada sejam reais.
+                # CORREÇÃO CRÍTICA:
+                # Garante que a chave privada tenha as quebras de linha corretas
                 if "private_key" in key_dict:
-                     key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
-
+                    key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+                
                 cred = credentials.Certificate(key_dict)
                 firebase_admin.initialize_app(cred)
             
-            # 2. Tenta carregar arquivo local (Desenvolvimento)
+            # Fallback para arquivo local (para seus testes no PC)
             else:
+                import os
                 current_dir = os.path.dirname(os.path.abspath(__file__))
                 json_path = os.path.join(current_dir, "serviceAccountKey.json")
-                
                 if os.path.exists(json_path):
                     cred = credentials.Certificate(json_path)
                     firebase_admin.initialize_app(cred)
                 else:
-                    st.error("Credenciais não encontradas (Secrets ou JSON local).")
+                    st.error("Nenhuma credencial encontrada (Secrets ou JSON).")
                     return None
                     
         except Exception as e:
@@ -186,7 +186,6 @@ def init_firestore():
             return None
             
     return firestore.client()
-
 db = init_firestore()
 if not db: st.stop()
 
