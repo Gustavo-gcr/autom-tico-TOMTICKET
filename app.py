@@ -29,6 +29,9 @@ MESES_DICT = {'Janeiro': 1, 'Fevereiro': 2, 'Março': 3, 'Abril': 4, 'Maio': 5, 
               'Julho': 7, 'Agosto': 8, 'Setembro': 9, 'Outubro': 10, 'Novembro': 11, 'Dezembro': 12}
 MESES_ABREV = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 
+# Totais fixos (meses não preenchidos no banco). Chave = "MMAAAA".
+TOTAIS_FIXOS = {"052026": 547}
+
 lcm_light_green = '#78B94B'
 lcm_gray = '#9E9E9E'
 
@@ -337,8 +340,22 @@ def carregar_todos_resumos():
     return {d.id: d.to_dict() for d in docs}
 
 
+def aplicar_totais_fixos(todos):
+    """Força o total dos meses em TOTAIS_FIXOS (cria um resumo mínimo se o mês não existir no banco)."""
+    todos = dict(todos)
+    for doc_id, total in TOTAIS_FIXOS.items():
+        r = dict(todos.get(doc_id) or {})
+        r.update({"ano": int(doc_id[2:]), "mes": int(doc_id[:2]), "total": total})
+        todos[doc_id] = r
+    return todos
+
+
 def precisa_reconstruir(resumo, ano, mes, ultimo):
     """Decide se é preciso reler os chamados do mês para refazer o resumo."""
+    # Meses com total fixo no código não são relidos do banco.
+    if f"{mes:02d}{ano}" in TOTAIS_FIXOS:
+        return False
+
     # Anos arquivados (2024/2025): gera 1x e pronto.
     if ano in ANOS_CONGELADOS:
         return resumo is None
@@ -488,52 +505,57 @@ doc_id_sel = f"{mes_num:02d}{ano_selecionado}"
 if ultimo:
     st.sidebar.caption(f"Último mês enviado ao banco: **{MESES_ABREV[ref_mes - 1]}/{ref_ano}**")
 
+todos = aplicar_totais_fixos(carregar_todos_resumos())
+
+# ---- Configurações (escondidas num popover, para o usuário comum não clicar sem querer) ----
 st.sidebar.markdown("---")
-if st.sidebar.button("📂 Atualizar Base (XLS)"):
-    show_update_dialog()
+_config = st.sidebar.popover("⚙️ Configurações", use_container_width=True) \
+    if hasattr(st.sidebar, "popover") else st.sidebar.expander("⚙️ Configurações")
 
-if st.sidebar.button("🔄 Recalcular resumo deste mês"):
-    try:
-        with st.spinner("Lendo o mês e gerando o resumo..."):
-            gerar_resumo(ano_selecionado, mes_num)
-        st.rerun()
-    except Exception as e:
-        st.sidebar.error(str(e))
+with _config:
+    if st.button("📂 Atualizar Base (XLS)", use_container_width=True):
+        show_update_dialog()
 
-todos = carregar_todos_resumos()
+    if st.button("🔄 Recalcular resumo deste mês", use_container_width=True):
+        try:
+            with st.spinner("Lendo o mês e gerando o resumo..."):
+                gerar_resumo(ano_selecionado, mes_num)
+            st.rerun()
+        except Exception as e:
+            st.error(str(e))
 
-with st.sidebar.expander("⚙️ Administração dos resumos"):
-    c = leituras_hoje()
-    st.caption(f"Leituras feitas pelo app hoje: **{c['leituras']:,}** / {LIMITE_LEITURAS_DIA:,}")
+    with st.expander("🛠️ Administração dos resumos"):
+        c = leituras_hoje()
+        st.caption(f"Leituras feitas pelo app hoje: **{c['leituras']:,}** / {LIMITE_LEITURAS_DIA:,}")
 
-    pendentes = []
-    for ano in ANOS_HISTORICO:
-        for m in range(1, 13):
-            esperado = ano in ANOS_CONGELADOS or (bool(ultimo) and (ano, m) <= ultimo)
-            if esperado and f"{m:02d}{ano}" not in todos:
-                pendentes.append((ano, m))
-    st.write(f"Meses sem resumo: **{len(pendentes)}**")
-    if pendentes:
-        st.caption(", ".join(f"{m:02d}/{a}" for a, m in pendentes))
-        if st.button("Gerar resumos faltantes"):
-            barra = st.progress(0.0)
-            for n, (a, m) in enumerate(pendentes, 1):
-                try:
-                    total = gerar_resumo(a, m)
-                    st.write(f"✅ {m:02d}/{a}: {total} chamados")
-                except Exception as e:
-                    st.error(f"Parou em {m:02d}/{a}: {e}")
-                    break
-                barra.progress(n / len(pendentes))
-            st.info("Recarregue a página para ver o resultado.")
+        pendentes = []
+        for ano in ANOS_HISTORICO:
+            for m in range(1, 13):
+                esperado = ano in ANOS_CONGELADOS or (bool(ultimo) and (ano, m) <= ultimo)
+                if esperado and f"{m:02d}{ano}" not in todos:
+                    pendentes.append((ano, m))
+        st.write(f"Meses sem resumo: **{len(pendentes)}**")
+        if pendentes:
+            st.caption(", ".join(f"{m:02d}/{a}" for a, m in pendentes))
+            if st.button("Gerar resumos faltantes"):
+                barra = st.progress(0.0)
+                for n, (a, m) in enumerate(pendentes, 1):
+                    try:
+                        total = gerar_resumo(a, m)
+                        st.write(f"✅ {m:02d}/{a}: {total} chamados")
+                    except Exception as e:
+                        st.error(f"Parou em {m:02d}/{a}: {e}")
+                        break
+                    barra.progress(n / len(pendentes))
+                st.info("Recarregue a página para ver o resultado.")
 
-    if todos:
-        linhas_adm = []
-        for k, v in sorted(todos.items(), key=lambda kv: (kv[1].get('ano', 0), kv[1].get('mes', 0))):
-            g = v.get('gerado_em')
-            linhas_adm.append({"Mês": f"{k[:2]}/{k[2:]}", "Total": v.get('total', 0),
-                               "Gerado em": g.astimezone().strftime('%d/%m %H:%M') if isinstance(g, datetime) else "-"})
-        st.dataframe(pd.DataFrame(linhas_adm), hide_index=True, height=250)
+        if todos:
+            linhas_adm = []
+            for k, v in sorted(todos.items(), key=lambda kv: (kv[1].get('ano', 0), kv[1].get('mes', 0))):
+                g = v.get('gerado_em')
+                linhas_adm.append({"Mês": f"{k[:2]}/{k[2:]}", "Total": v.get('total', 0),
+                                   "Gerado em": g.astimezone().strftime('%d/%m %H:%M') if isinstance(g, datetime) else "-"})
+            st.dataframe(pd.DataFrame(linhas_adm), hide_index=True, height=250)
 
 # ---- Garante o resumo do mês selecionado ----
 resumo = todos.get(doc_id_sel)
@@ -541,7 +563,7 @@ if precisa_reconstruir(resumo, ano_selecionado, mes_num, ultimo):
     try:
         with st.spinner(f"Atualizando resumo de {mes_selecionado}/{ano_selecionado}..."):
             gerar_resumo(ano_selecionado, mes_num)
-        todos = carregar_todos_resumos()
+        todos = aplicar_totais_fixos(carregar_todos_resumos())
         resumo = todos.get(doc_id_sel)
     except Exception as e:
         st.warning(f"Não foi possível atualizar o resumo agora: {e}")
@@ -572,17 +594,17 @@ def serie(d):
 
 def tabela_e_grafico(s, x_label, y_label, titulo=None):
     c1, c2 = st.columns([1, 2])
-    c1.write(s)
+    c1.dataframe(s.rename("Chamados").to_frame(), use_container_width=True)
     mostrar(plot_standard_bar(s, x_label, y_label, titulo), c2)
 
 
-tem_dados = bool(resumo) and resumo.get('total', 0) > 0
+tem_dados = bool(resumo) and resumo.get('total', 0) > 0 and bool(resumo.get('por_categoria'))
 
 # ---------- Abas do mês (usam apenas o resumo: 0 leituras extras) ----------
 if not tem_dados:
     for i in range(7):
         with tabs[i]:
-            st.warning(f"Sem dados encontrados para o período {mes_selecionado}/{ano_selecionado}.")
+            st.warning(f"Sem dados detalhados para o período {mes_selecionado}/{ano_selecionado}.")
 else:
     por_att_cat = resumo.get('por_atendente_categoria', {})
 
@@ -646,7 +668,7 @@ with tabs[7]:
         else:
             st.info("Selecione pelo menos um ano.")
     else:
-        st.info("Ainda não há resumos gerados. Use ⚙️ Administração dos resumos na barra lateral.")
+        st.info("Ainda não há resumos gerados. Use ⚙️ Configurações > Administração dos resumos na barra lateral.")
 
 # ---------- Evolução por categoria (somente resumos) ----------
 with tabs[8]:
@@ -675,4 +697,4 @@ with tabs[8]:
         else:
             st.info("Selecione pelo menos uma categoria.")
     else:
-        st.info("Histórico indisponível. Gere os resumos em ⚙️ Administração dos resumos.")
+        st.info("Histórico indisponível. Gere os resumos em ⚙️ Configurações > Administração dos resumos.")
