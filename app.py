@@ -8,6 +8,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import os
+import unicodedata
 
 # =====================================================================
 # CONFIGURAÇÃO
@@ -31,6 +32,20 @@ MESES_ABREV = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'O
 
 # Totais fixos (meses não preenchidos no banco). Chave = "MMAAAA".
 TOTAIS_FIXOS = {"052026": 547}
+
+# ---- Segundo banco (plataforma de obras) — SOMENTE LEITURA ----
+CATEGORIA_OBRA = "Criação de Obra"     # entra como mais uma categoria, mas conta OBRAS criadas (não chamados)
+COLECAO_OBRAS = "obras"                # <-- CONFIRMAR: nome da coleção das obras no banco obras-68dbe
+CAMPOS_DATA_OBRA = ["criadoEm", "createdAt", "dataCriacao", "criado_em", "data", "timestamp"]  # <-- CONFIRMAR o campo de data
+TIPOS_OBRA_CONTADOS = ["Obra Nova"]    # None = conta qualquer tipo
+# e-mail cadastrado na plataforma de obras -> nome do atendente no TomTicket
+ATENDENTES_OBRAS = {
+    "crislane.oliveira@lcmconstrucao.com.br": "Crislane Oliveira",
+    "crislane.oliveira@lcmcostrucao.com.br": "Crislane Oliveira",   # grafia como veio na mensagem
+    "israel.santos@lcmconstrucao.com.br": "Israel Santos",
+    "tiago@lcmconstrucao.com.br": "Tiago",
+    "angelo.silva@lcmconstrucao.com.br": "Angelo Silva",
+}
 
 lcm_light_green = '#78B94B'
 lcm_gray = '#9E9E9E'
@@ -149,6 +164,17 @@ def plot_evolution_line_bar(df_grouped, title):
 # =====================================================================
 # FIREBASE
 # =====================================================================
+def _validar_chave(nome_secret, key_dict):
+    """Falha com mensagem clara se a private_key dos Secrets estiver incompleta ou com placeholder."""
+    pk = str(key_dict.get("private_key", ""))
+    if (not pk.startswith("-----BEGIN PRIVATE KEY-----") or len(pk) < 1000
+            or "..." in pk or "COLE" in pk.upper()):
+        raise ValueError(
+            f"A private_key de [{nome_secret}] nos Secrets está incompleta ou com texto de exemplo ('...'). "
+            "Copie o valor completo do campo private_key do arquivo JSON da conta de serviço."
+        )
+
+
 @st.cache_resource
 def init_firestore():
     if not firebase_admin._apps:
@@ -157,6 +183,7 @@ def init_firestore():
                 key_dict = dict(st.secrets["FIREBASE_CREDENTIALS"])
                 if "private_key" in key_dict:
                     key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+                _validar_chave("FIREBASE_CREDENTIALS", key_dict)
                 firebase_admin.initialize_app(credentials.Certificate(key_dict))
             else:
                 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -175,6 +202,35 @@ def init_firestore():
 db = init_firestore()
 if not db:
     st.stop()
+
+
+@st.cache_resource
+def init_firestore_obras():
+    """Conexão com o banco de OBRAS. Use uma conta de serviço com papel 'Leitor do Cloud Datastore'
+    (roles/datastore.viewer): assim o banco só aceita leitura, mesmo que o código tente escrever."""
+    try:
+        if "FIREBASE_OBRAS_CREDENTIALS" in st.secrets:
+            key_dict = dict(st.secrets["FIREBASE_OBRAS_CREDENTIALS"])
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+            _validar_chave("FIREBASE_OBRAS_CREDENTIALS", key_dict)
+            cred = credentials.Certificate(key_dict)
+        else:
+            json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "serviceAccountObras.json")
+            if not os.path.exists(json_path):
+                return None
+            cred = credentials.Certificate(json_path)
+        try:
+            app = firebase_admin.get_app("obras")
+        except ValueError:
+            app = firebase_admin.initialize_app(cred, name="obras")
+        return firestore.client(app=app)
+    except Exception as e:
+        st.sidebar.warning(f"Banco de obras indisponível: {e}")
+        return None
+
+
+db_obras = init_firestore_obras()
 
 
 # =====================================================================
@@ -350,6 +406,119 @@ def aplicar_totais_fixos(todos):
     return todos
 
 
+# =====================================================================
+# OBRAS CRIADAS NA PLATAFORMA (segundo banco — apenas consultas, nenhuma escrita)
+# =====================================================================
+def _norm(txt):
+    txt = unicodedata.normalize("NFKD", str(txt or "")).encode("ascii", "ignore").decode()
+    return " ".join(txt.lower().split())
+
+
+def _parse_data(v):
+    """Aceita Timestamp do Firestore, epoch (s/ms), ISO ou dd/mm/aaaa. Retorna datetime em America/Sao_Paulo."""
+    sp = ZoneInfo("America/Sao_Paulo")
+    dt = None
+    if isinstance(v, datetime):
+        dt = v
+    elif isinstance(v, (int, float)):
+        dt = datetime.fromtimestamp(v / 1000 if v > 1e11 else v, tz=timezone.utc)
+    elif isinstance(v, str):
+        t = v.strip()
+        try:
+            dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+        except ValueError:
+            for f in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+                try:
+                    dt = datetime.strptime(t, f)
+                    break
+                except ValueError:
+                    pass
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=sp)
+    return dt.astimezone(sp)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def carregar_obras():
+    """Lê (somente leitura) as obras dos atendentes listados e conta por (ano, mês, atendente).
+    Retorna ({(ano, mes): {nome: qtd}}, info_diagnostico)."""
+    info = {"lidos": 0, "contados": 0, "sem_data": 0, "ignorados_tipo": 0, "campo_data": None, "erro": None}
+    if db_obras is None:
+        info["erro"] = "Banco de obras não configurado (credenciais ausentes)."
+        return {}, info
+    emails = list(ATENDENTES_OBRAS)
+    contagem = {}
+    try:
+        ref = db_obras.collection(COLECAO_OBRAS)
+        for i in range(0, len(emails), 30):  # limite de 30 valores no filtro "in"
+            for doc in ref.where(filter=FieldFilter("email", "in", emails[i:i + 30])).stream():
+                info["lidos"] += 1
+                d = doc.to_dict() or {}
+                if TIPOS_OBRA_CONTADOS and d.get("tipo") not in TIPOS_OBRA_CONTADOS:
+                    info["ignorados_tipo"] += 1
+                    continue
+                campo = next((c for c in CAMPOS_DATA_OBRA if d.get(c) is not None), None)
+                dt = _parse_data(d.get(campo)) if campo else None
+                if dt is None:
+                    info["sem_data"] += 1
+                    continue
+                info["campo_data"] = campo
+                nome = ATENDENTES_OBRAS.get(str(d.get("email", "")).strip().lower()) or d.get("nome") or d.get("por")
+                por_mes = contagem.setdefault((dt.year, dt.month), {})
+                por_mes[nome] = por_mes.get(nome, 0) + 1
+                info["contados"] += 1
+    except Exception as e:
+        info["erro"] = str(e)
+    return contagem, info
+
+
+def _casar_nome(nome, existentes):
+    """Casa o nome vindo das obras com o nome do atendente já existente no resumo do TomTicket."""
+    n = _norm(nome)
+    for e in existentes:
+        if _norm(e) == n:
+            return e
+    toks = set(n.split())
+    cand = [e for e in existentes if toks and (toks <= set(_norm(e).split()) or set(_norm(e).split()) <= toks)]
+    return cand[0] if len(cand) == 1 else nome
+
+
+def aplicar_obras(todos):
+    """Soma as obras criadas à categoria 'Criação de Obra' (e ao total) de cada mês. Só em memória."""
+    contagem, _ = carregar_obras()
+    if not contagem:
+        return todos
+    todos = dict(todos)
+    for doc_id, r in list(todos.items()):
+        por_att = contagem.get((r.get("ano"), r.get("mes")))
+        if not por_att:
+            continue
+        r = dict(r)
+        total_obras = sum(por_att.values())
+        r["total"] = r.get("total", 0) + total_obras
+        r["total_obras"] = total_obras
+        if r.get("por_categoria"):   # mês com detalhamento: entra como categoria/atendente
+            existentes = set(r.get("por_atendente", {}))
+            por_cat = dict(r["por_categoria"])
+            por_cat[CATEGORIA_OBRA] = por_cat.get(CATEGORIA_OBRA, 0) + total_obras
+            por_a = dict(r.get("por_atendente", {}))
+            por_ac = {a: dict(c) for a, c in r.get("por_atendente_categoria", {}).items()}
+            for nome, q in por_att.items():
+                alvo = _casar_nome(nome, existentes)
+                por_a[alvo] = por_a.get(alvo, 0) + q
+                por_ac.setdefault(alvo, {})
+                por_ac[alvo][CATEGORIA_OBRA] = por_ac[alvo].get(CATEGORIA_OBRA, 0) + q
+            r.update({"por_categoria": por_cat, "por_atendente": por_a, "por_atendente_categoria": por_ac})
+        todos[doc_id] = r
+    return todos
+
+
+def carregar_painel():
+    return aplicar_obras(aplicar_totais_fixos(carregar_todos_resumos()))
+
+
 def precisa_reconstruir(resumo, ano, mes, ultimo):
     """Decide se é preciso reler os chamados do mês para refazer o resumo."""
     # Meses com total fixo no código não são relidos do banco.
@@ -505,7 +674,7 @@ doc_id_sel = f"{mes_num:02d}{ano_selecionado}"
 if ultimo:
     st.sidebar.caption(f"Último mês enviado ao banco: **{MESES_ABREV[ref_mes - 1]}/{ref_ano}**")
 
-todos = aplicar_totais_fixos(carregar_todos_resumos())
+todos = carregar_painel()
 
 # ---- Configurações (escondidas num popover, para o usuário comum não clicar sem querer) ----
 st.sidebar.markdown("---")
@@ -557,13 +726,34 @@ with _config:
                                    "Gerado em": g.astimezone().strftime('%d/%m %H:%M') if isinstance(g, datetime) else "-"})
             st.dataframe(pd.DataFrame(linhas_adm), hide_index=True, height=250)
 
+    with st.expander("🏗️ Diagnóstico – Obras (somente leitura)"):
+        if db_obras is None:
+            st.warning("Banco de obras não conectado. Configure FIREBASE_OBRAS_CREDENTIALS nos Secrets "
+                       "ou coloque serviceAccountObras.json ao lado do app.")
+        else:
+            if st.button("🔁 Recarregar obras"):
+                carregar_obras.clear()
+                st.rerun()
+            _, info_o = carregar_obras()
+            st.json(info_o)
+            if st.button("Listar coleções e ver amostra"):
+                try:
+                    st.write("Coleções:", [c.id for c in db_obras.collections()])
+                    amostra = list(db_obras.collection(COLECAO_OBRAS).limit(1).stream())
+                    if amostra:
+                        st.write({k: type(v).__name__ for k, v in amostra[0].to_dict().items()})
+                    else:
+                        st.info(f"Coleção '{COLECAO_OBRAS}' vazia ou inexistente.")
+                except Exception as e:
+                    st.error(str(e))
+
 # ---- Garante o resumo do mês selecionado ----
 resumo = todos.get(doc_id_sel)
 if precisa_reconstruir(resumo, ano_selecionado, mes_num, ultimo):
     try:
         with st.spinner(f"Atualizando resumo de {mes_selecionado}/{ano_selecionado}..."):
             gerar_resumo(ano_selecionado, mes_num)
-        todos = aplicar_totais_fixos(carregar_todos_resumos())
+        todos = carregar_painel()
         resumo = todos.get(doc_id_sel)
     except Exception as e:
         st.warning(f"Não foi possível atualizar o resumo agora: {e}")
@@ -575,6 +765,8 @@ st.title(f'Relatório Mensal TomTicket - {mes_selecionado}/{ano_selecionado}')
 if resumo:
     gerado = resumo.get("gerado_em")
     legenda = f"Total de chamados: **{resumo.get('total', 0)}**"
+    if resumo.get("total_obras"):
+        legenda += f" (inclui **{resumo['total_obras']}** obras criadas na plataforma)"
     if isinstance(gerado, datetime):
         legenda += f" • resumo gerado em {gerado.astimezone().strftime('%d/%m/%Y %H:%M')}"
     st.caption(legenda)
