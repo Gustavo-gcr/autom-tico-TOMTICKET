@@ -895,4 +895,4 @@ with tabs[8]:
         else:
             st.info("Selecione pelo menos uma categoria.")
     else:
-        st.info("Histórico indisponível. Gere os resumos em ⚙️ Configurações > Administração dos resumos.").
+        st.info("Histórico indisponível. Gere os resumos em ⚙️ Configurações > Administração dos resumos.")
