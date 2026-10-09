@@ -445,7 +445,7 @@ def _parse_data(v):
 def carregar_obras():
     """Lê (somente leitura) as obras dos atendentes listados e conta por (ano, mês, atendente).
     Retorna ({(ano, mes): {nome: qtd}}, info_diagnostico)."""
-    info = {"lidos": 0, "contados": 0, "sem_data": 0, "ignorados_tipo": 0, "campo_data": None, "erro": None}
+    info = {"lidos": 0, "contados": 0, "sem_data": 0, "ignorados_tipo": 0, "campo_data": None, "erro": None, "detalhe": []}
     if db_obras is None:
         info["erro"] = "Banco de obras não configurado (credenciais ausentes)."
         return {}, info
@@ -473,6 +473,10 @@ def carregar_obras():
                 email = str(resp.get("email", "")).strip().lower()
                 nome = ATENDENTES_OBRAS.get(email) or resp.get("nome") or resp.get("por") or None
                 nome = str(nome).strip() if nome else None   # None = ninguém pegou ainda (conta só no geral)
+                info["detalhe"].append({"Código": d.get("codigo"), "Título": d.get("titulo"),
+                                        "Criada em": dt.strftime("%d/%m/%Y %H:%M"),
+                                        "Mês": f"{dt.month:02d}/{dt.year}",
+                                        "Atendente": nome or "(ninguém pegou)"})
                 por_mes = contagem.setdefault((dt.year, dt.month), {})
                 por_mes[nome] = por_mes.get(nome, 0) + 1
                 info["contados"] += 1
@@ -744,7 +748,10 @@ with _config:
                 carregar_obras.clear()
                 st.rerun()
             _, info_o = carregar_obras()
-            st.json(info_o)
+            st.json({k: v for k, v in info_o.items() if k != "detalhe"})
+            if info_o.get("detalhe"):
+                st.caption("Obras contadas (uma linha por obra):")
+                st.dataframe(pd.DataFrame(info_o["detalhe"]).sort_values("Criada em"), hide_index=True)
             if st.button("Listar coleções e ver amostra"):
                 try:
                     st.write("Coleções:", [c.id for c in db_obras.collections()])
