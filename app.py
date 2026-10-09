@@ -36,6 +36,7 @@ TOTAIS_FIXOS = {"052026": 547}
 # ---- Segundo banco (plataforma de obras) — SOMENTE LEITURA ----
 CATEGORIA_OBRA = "Criação de Obra"     # entra como mais uma categoria, mas conta OBRAS criadas (não chamados)
 COLECAO_OBRAS = "obras"                # <-- CONFIRMAR: nome da coleção das obras no banco obras-68dbe
+CAMPO_CRIADOR_OBRA = "criadoPor"       # campo da obra que diz quem criou (confirmado na amostra do banco)
 CAMPOS_DATA_OBRA = ["criadoEm", "createdAt", "dataCriacao", "criado_em", "data", "timestamp"]  # <-- CONFIRMAR o campo de data
 TIPOS_OBRA_CONTADOS = ["Obra Nova"]    # None = conta qualquer tipo
 # e-mail cadastrado na plataforma de obras -> nome do atendente no TomTicket
@@ -453,7 +454,7 @@ def carregar_obras():
     try:
         ref = db_obras.collection(COLECAO_OBRAS)
         for i in range(0, len(emails), 30):  # limite de 30 valores no filtro "in"
-            for doc in ref.where(filter=FieldFilter("email", "in", emails[i:i + 30])).stream():
+            for doc in ref.where(filter=FieldFilter(CAMPO_CRIADOR_OBRA, "in", emails[i:i + 30])).stream():
                 info["lidos"] += 1
                 d = doc.to_dict() or {}
                 if TIPOS_OBRA_CONTADOS and d.get("tipo") not in TIPOS_OBRA_CONTADOS:
@@ -465,7 +466,7 @@ def carregar_obras():
                     info["sem_data"] += 1
                     continue
                 info["campo_data"] = campo
-                nome = ATENDENTES_OBRAS.get(str(d.get("email", "")).strip().lower()) or d.get("nome") or d.get("por")
+                nome = ATENDENTES_OBRAS.get(str(d.get(CAMPO_CRIADOR_OBRA, "")).strip().lower()) or d.get(CAMPO_CRIADOR_OBRA)
                 por_mes = contagem.setdefault((dt.year, dt.month), {})
                 por_mes[nome] = por_mes.get(nome, 0) + 1
                 info["contados"] += 1
@@ -742,6 +743,11 @@ with _config:
                     amostra = list(db_obras.collection(COLECAO_OBRAS).limit(1).stream())
                     if amostra:
                         st.write({k: type(v).__name__ for k, v in amostra[0].to_dict().items()})
+                        _a = amostra[0].to_dict()
+                        st.write("Valores da amostra:", {k: _a.get(k) for k in (CAMPO_CRIADOR_OBRA, "tipo", "criadoEm")})
+                        _vals = sorted({str(x.to_dict().get(CAMPO_CRIADOR_OBRA)) for x in
+                                        db_obras.collection(COLECAO_OBRAS).limit(50).stream()})
+                        st.write(f"Valores de '{CAMPO_CRIADOR_OBRA}' em até 50 obras:", _vals)
                     else:
                         st.info(f"Coleção '{COLECAO_OBRAS}' vazia ou inexistente.")
                 except Exception as e:
@@ -889,4 +895,4 @@ with tabs[8]:
         else:
             st.info("Selecione pelo menos uma categoria.")
     else:
-        st.info("Histórico indisponível. Gere os resumos em ⚙️ Configurações > Administração dos resumos.")
+        st.info("Histórico indisponível. Gere os resumos em ⚙️ Configurações > Administração dos resumos.").
