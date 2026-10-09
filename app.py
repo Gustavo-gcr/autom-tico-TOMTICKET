@@ -36,7 +36,8 @@ TOTAIS_FIXOS = {"052026": 547}
 # ---- Segundo banco (plataforma de obras) — SOMENTE LEITURA ----
 CATEGORIA_OBRA = "Criação de Obra"     # entra como mais uma categoria, mas conta OBRAS criadas (não chamados)
 COLECAO_OBRAS = "obras"                # <-- CONFIRMAR: nome da coleção das obras no banco obras-68dbe
-CAMPO_CRIADOR_OBRA = "criadoPor"       # campo da obra que diz quem criou (confirmado na amostra do banco)
+CAMPO_CRIADOR_OBRA = "criadoPor"       # campo da obra com o NOME de quem criou (ex.: "ELCELAINE ROCHA")
+FILTRAR_POR_CRIADOR = False            # False = conta TODAS as obras do tipo; True = só as de ATENDENTES_OBRAS
 CAMPOS_DATA_OBRA = ["criadoEm", "createdAt", "dataCriacao", "criado_em", "data", "timestamp"]  # <-- CONFIRMAR o campo de data
 TIPOS_OBRA_CONTADOS = ["Obra Nova"]    # None = conta qualquer tipo
 # e-mail cadastrado na plataforma de obras -> nome do atendente no TomTicket
@@ -45,6 +46,10 @@ ATENDENTES_OBRAS = {
     "crislane.oliveira@lcmcostrucao.com.br": "Crislane Oliveira",   # grafia como veio na mensagem
     "israel.santos@lcmconstrucao.com.br": "Israel Santos",
     "tiago@lcmconstrucao.com.br": "Tiago",
+    "crislane oliveira": "Crislane Oliveira",   # o banco de obras guarda o NOME em criadoPor
+    "israel santos": "Israel Santos",
+    "tiago": "Tiago",
+    "angelo silva": "Angelo Silva",
     "angelo.silva@lcmconstrucao.com.br": "Angelo Silva",
 }
 
@@ -449,12 +454,20 @@ def carregar_obras():
     if db_obras is None:
         info["erro"] = "Banco de obras não configurado (credenciais ausentes)."
         return {}, info
-    emails = list(ATENDENTES_OBRAS)
     contagem = {}
+    nomes_norm = {_norm(k): v for k, v in ATENDENTES_OBRAS.items()}
     try:
         ref = db_obras.collection(COLECAO_OBRAS)
-        for i in range(0, len(emails), 30):  # limite de 30 valores no filtro "in"
-            for doc in ref.where(filter=FieldFilter(CAMPO_CRIADOR_OBRA, "in", emails[i:i + 30])).stream():
+        if FILTRAR_POR_CRIADOR:
+            chaves = list(ATENDENTES_OBRAS)
+            consultas = [ref.where(filter=FieldFilter(CAMPO_CRIADOR_OBRA, "in", chaves[i:i + 30]))
+                         for i in range(0, len(chaves), 30)]
+        elif TIPOS_OBRA_CONTADOS:
+            consultas = [ref.where(filter=FieldFilter("tipo", "in", list(TIPOS_OBRA_CONTADOS)[:30]))]
+        else:
+            consultas = [ref]
+        for consulta in consultas:
+            for doc in consulta.stream():
                 info["lidos"] += 1
                 d = doc.to_dict() or {}
                 if TIPOS_OBRA_CONTADOS and d.get("tipo") not in TIPOS_OBRA_CONTADOS:
@@ -466,7 +479,9 @@ def carregar_obras():
                     info["sem_data"] += 1
                     continue
                 info["campo_data"] = campo
-                nome = ATENDENTES_OBRAS.get(str(d.get(CAMPO_CRIADOR_OBRA, "")).strip().lower()) or d.get(CAMPO_CRIADOR_OBRA)
+                nome = (ATENDENTES_OBRAS.get(str(d.get(CAMPO_CRIADOR_OBRA, "")).strip().lower())
+                        or nomes_norm.get(_norm(d.get(CAMPO_CRIADOR_OBRA)))
+                        or str(d.get(CAMPO_CRIADOR_OBRA) or "Não Informado").strip().title())
                 por_mes = contagem.setdefault((dt.year, dt.month), {})
                 por_mes[nome] = por_mes.get(nome, 0) + 1
                 info["contados"] += 1
