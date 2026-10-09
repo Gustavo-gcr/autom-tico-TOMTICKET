@@ -36,8 +36,7 @@ TOTAIS_FIXOS = {"052026": 547}
 # ---- Segundo banco (plataforma de obras) — SOMENTE LEITURA ----
 CATEGORIA_OBRA = "Criação de Obra"     # entra como mais uma categoria, mas conta OBRAS criadas (não chamados)
 COLECAO_OBRAS = "obras"                # <-- CONFIRMAR: nome da coleção das obras no banco obras-68dbe
-CAMPO_CRIADOR_OBRA = "criadoPor"       # campo da obra com o NOME de quem criou (ex.: "ELCELAINE ROCHA")
-FILTRAR_POR_CRIADOR = False            # False = conta TODAS as obras do tipo; True = só as de ATENDENTES_OBRAS
+SETOR_ATENDENTE_OBRA = "Sistemas"      # obra["responsaveis"]["Sistemas"] = quem PEGOU a tarefa (email/nome)
 CAMPOS_DATA_OBRA = ["criadoEm", "createdAt", "dataCriacao", "criado_em", "data", "timestamp"]  # <-- CONFIRMAR o campo de data
 TIPOS_OBRA_CONTADOS = ["Obra Nova"]    # None = conta qualquer tipo
 # e-mail cadastrado na plataforma de obras -> nome do atendente no TomTicket
@@ -46,10 +45,6 @@ ATENDENTES_OBRAS = {
     "crislane.oliveira@lcmcostrucao.com.br": "Crislane Oliveira",   # grafia como veio na mensagem
     "israel.santos@lcmconstrucao.com.br": "Israel Santos",
     "tiago@lcmconstrucao.com.br": "Tiago",
-    "crislane oliveira": "Crislane Oliveira",   # o banco de obras guarda o NOME em criadoPor
-    "israel santos": "Israel Santos",
-    "tiago": "Tiago",
-    "angelo silva": "Angelo Silva",
     "angelo.silva@lcmconstrucao.com.br": "Angelo Silva",
 }
 
@@ -455,14 +450,9 @@ def carregar_obras():
         info["erro"] = "Banco de obras não configurado (credenciais ausentes)."
         return {}, info
     contagem = {}
-    nomes_norm = {_norm(k): v for k, v in ATENDENTES_OBRAS.items()}
     try:
         ref = db_obras.collection(COLECAO_OBRAS)
-        if FILTRAR_POR_CRIADOR:
-            chaves = list(ATENDENTES_OBRAS)
-            consultas = [ref.where(filter=FieldFilter(CAMPO_CRIADOR_OBRA, "in", chaves[i:i + 30]))
-                         for i in range(0, len(chaves), 30)]
-        elif TIPOS_OBRA_CONTADOS:
+        if TIPOS_OBRA_CONTADOS:
             consultas = [ref.where(filter=FieldFilter("tipo", "in", list(TIPOS_OBRA_CONTADOS)[:30]))]
         else:
             consultas = [ref]
@@ -479,9 +469,10 @@ def carregar_obras():
                     info["sem_data"] += 1
                     continue
                 info["campo_data"] = campo
-                nome = (ATENDENTES_OBRAS.get(str(d.get(CAMPO_CRIADOR_OBRA, "")).strip().lower())
-                        or nomes_norm.get(_norm(d.get(CAMPO_CRIADOR_OBRA)))
-                        or str(d.get(CAMPO_CRIADOR_OBRA) or "Não Informado").strip().title())
+                resp = (d.get("responsaveis") or {}).get(SETOR_ATENDENTE_OBRA) or {}
+                email = str(resp.get("email", "")).strip().lower()
+                nome = ATENDENTES_OBRAS.get(email) or resp.get("nome") or resp.get("por") or None
+                nome = str(nome).strip() if nome else None   # None = ninguém pegou ainda (conta só no geral)
                 por_mes = contagem.setdefault((dt.year, dt.month), {})
                 por_mes[nome] = por_mes.get(nome, 0) + 1
                 info["contados"] += 1
@@ -522,6 +513,8 @@ def aplicar_obras(todos):
             por_a = dict(r.get("por_atendente", {}))
             por_ac = {a: dict(c) for a, c in r.get("por_atendente_categoria", {}).items()}
             for nome, q in por_att.items():
+                if not nome:   # obra ainda sem atendente: conta no total/categoria, não em atendente
+                    continue
                 alvo = _casar_nome(nome, existentes)
                 por_a[alvo] = por_a.get(alvo, 0) + q
                 por_ac.setdefault(alvo, {})
@@ -759,10 +752,8 @@ with _config:
                     if amostra:
                         st.write({k: type(v).__name__ for k, v in amostra[0].to_dict().items()})
                         _a = amostra[0].to_dict()
-                        st.write("Valores da amostra:", {k: _a.get(k) for k in (CAMPO_CRIADOR_OBRA, "tipo", "criadoEm")})
-                        _vals = sorted({str(x.to_dict().get(CAMPO_CRIADOR_OBRA)) for x in
-                                        db_obras.collection(COLECAO_OBRAS).limit(50).stream()})
-                        st.write(f"Valores de '{CAMPO_CRIADOR_OBRA}' em até 50 obras:", _vals)
+                        st.write("Valores da amostra:", {"tipo": _a.get("tipo"), "criadoEm": _a.get("criadoEm"),
+                                 "responsavel": (_a.get("responsaveis") or {}).get(SETOR_ATENDENTE_OBRA)})
                     else:
                         st.info(f"Coleção '{COLECAO_OBRAS}' vazia ou inexistente.")
                 except Exception as e:
