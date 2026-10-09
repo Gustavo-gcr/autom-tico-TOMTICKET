@@ -781,14 +781,14 @@ if precisa_reconstruir(resumo, ano_selecionado, mes_num, ultimo):
 # PÁGINA
 # =====================================================================
 st.title(f'Relatório Mensal TomTicket - {mes_selecionado}/{ano_selecionado}')
-if resumo:
-    gerado = resumo.get("gerado_em")
-    legenda = f"Total de chamados: **{resumo.get('total', 0)}**"
-    if resumo.get("total_obras"):
-        legenda += f" (inclui **{resumo['total_obras']}** obras criadas na plataforma)"
-    if isinstance(gerado, datetime):
-        legenda += f" • resumo gerado em {gerado.astimezone().strftime('%d/%m/%Y %H:%M')}"
-    st.caption(legenda)
+# if resumo:
+#     gerado = resumo.get("gerado_em")
+#     legenda = f"Total de chamados: **{resumo.get('total', 0)}**"
+#     if resumo.get("total_obras"):
+#         legenda += f" (inclui **{resumo['total_obras']}** obras criadas na plataforma)"
+#     if isinstance(gerado, datetime):
+#         legenda += f" • resumo gerado em {gerado.astimezone().strftime('%d/%m/%Y %H:%M')}"
+#     st.caption(legenda)
 
 tabs = st.tabs([
     "Análise por Categoria", "Análise por Atendente", "Painel do Atendente",
