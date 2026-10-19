@@ -98,6 +98,9 @@ def mostrar(fig, container=st, titulo="Gráfico", fig_ampliado=None):
             _popup()
 
 
+MIN_SLOTS_GRAFICO = 5   # nº mínimo de "faixas" do gráfico (evita barras gigantes com poucos itens)
+
+
 def plot_standard_bar(data_series, x_label, y_label, title=None,
                       color=lcm_light_green, max_itens=None):
     """Barras horizontais com o valor ao lado de cada barra.
@@ -110,19 +113,23 @@ def plot_standard_bar(data_series, x_label, y_label, title=None,
     if max_itens:
         data_series = data_series.head(max_itens)
         fig, ax = plt.subplots(figsize=(10, 5))
-        slots = max_itens            # espaço fixo: barras sempre com a mesma espessura
+        # Poucos itens: barras com espessura limitada e centralizadas na
+        # vertical (em vez de coladas no topo). Muitos itens: preenche tudo.
+        slots = max(len(data_series), MIN_SLOTS_GRAFICO)
         fs_nome, fs_valor = 11, 11
     else:
         n = len(data_series)
         fig, ax = plt.subplots(figsize=(16, max(6, 0.42 * n + 1.5)))
-        slots = n
+        slots = max(n, MIN_SLOTS_GRAFICO)
         fs_nome, fs_valor = 12, 12
 
     nomes = [str(i) for i in data_series.index]
     valores = data_series.values
-    bars = ax.barh(nomes, valores, color=color, edgecolor='black',
+    n_barras = len(nomes)
+    bars = ax.barh(nomes, valores, height=0.6, color=color, edgecolor='black',
                    linewidth=1.0, zorder=3)
-    ax.set_ylim(slots - 0.5, -0.5)   # maior valor no topo
+    sobra = (slots - n_barras) / 2   # espaço vazio dividido entre topo e base
+    ax.set_ylim(n_barras - 0.5 + sobra, -0.5 - sobra)   # maior valor no topo, conjunto centralizado
     ax.set_xlabel(y_label, fontsize=11)
     ax.set_title(title if title else "", fontsize=13, fontweight='bold')
     ax.tick_params(axis='y', labelsize=fs_nome)
@@ -131,6 +138,7 @@ def plot_standard_bar(data_series, x_label, y_label, title=None,
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.set_xlim(0, max(valores.max() * 1.12, 1))
+    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))   # sem ticks fracionados (0.2, 0.4...)
 
     for bar in bars:
         w = bar.get_width()
