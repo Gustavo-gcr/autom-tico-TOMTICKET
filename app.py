@@ -8,6 +8,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import os
+import io
+import base64
 import unicodedata
 
 # =====================================================================
@@ -56,9 +58,19 @@ lcm_gray = '#9E9E9E'
 # GRÁFICOS
 # =====================================================================
 def mostrar(fig, container=st):
-    if fig is not None:
-        container.pyplot(fig)
-        plt.close(fig)
+    """Renderiza o gráfico do matplotlib embutido no HTML (base64).
+    Não depende do servidor de mídia do Streamlit (st.pyplot), que gerava a
+    imagem quebrada com o texto "0" quando o arquivo temporário expirava."""
+    if fig is None:
+        return
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    container.markdown(
+        f'<img src="data:image/png;base64,{b64}" style="width:100%;height:auto;">',
+        unsafe_allow_html=True,
+    )
 
 
 def plot_standard_bar(data_series, x_label, y_label, title=None, color=lcm_light_green):
@@ -804,8 +816,20 @@ def serie(d):
 
 
 def tabela_e_grafico(s, x_label, y_label, titulo=None):
-    c1, c2 = st.columns([1, 2])
-    c1.dataframe(s.rename("Chamados").to_frame(), use_container_width=True)
+    c1, c2 = st.columns([2, 3])
+    # Nome vira coluna normal (largura controlada) para o número de chamados
+    # nunca ficar escondido; altura ajustada ao nº de linhas (sem rolagem).
+    df_tab = s.rename("Chamados").rename_axis(x_label).reset_index()
+    c1.dataframe(
+        df_tab,
+        hide_index=True,
+        use_container_width=True,
+        height=min(38 + 35 * len(df_tab), 1200),
+        column_config={
+            x_label: st.column_config.TextColumn(x_label, width="large"),
+            "Chamados": st.column_config.NumberColumn("Chamados", width="small"),
+        },
+    )
     mostrar(plot_standard_bar(s, x_label, y_label, titulo), c2)
 
 
