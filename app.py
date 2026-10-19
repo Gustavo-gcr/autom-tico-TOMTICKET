@@ -57,41 +57,64 @@ lcm_gray = '#9E9E9E'
 # =====================================================================
 # GRÁFICOS
 # =====================================================================
-def mostrar(fig, container=st):
-    """Renderiza o gráfico do matplotlib embutido no HTML (base64).
-    Não depende do servidor de mídia do Streamlit (st.pyplot), que gerava a
-    imagem quebrada com o texto "0" quando o arquivo temporário expirava."""
+_dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+
+
+def _img_html(b64):
+    return f'<img src="data:image/png;base64,{b64}" style="width:100%;height:auto;">'
+
+
+def mostrar(fig, container=st, titulo="Gráfico"):
+    """Renderiza o gráfico embutido em base64 (sem o servidor de mídia do
+    Streamlit, que causava a imagem quebrada) e oferece botão para ampliar
+    em pop-up."""
     if fig is None:
         return
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
     plt.close(fig)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    container.markdown(
-        f'<img src="data:image/png;base64,{b64}" style="width:100%;height:auto;">',
-        unsafe_allow_html=True,
-    )
+    container.markdown(_img_html(b64), unsafe_allow_html=True)
+
+    if _dialog is not None:
+        chave = "amp_" + str(abs(hash(b64)))
+
+        @_dialog(titulo, width="large")
+        def _popup():
+            st.markdown(_img_html(b64), unsafe_allow_html=True)
+
+        if container.button("🔍 Ampliar gráfico", key=chave):
+            _popup()
 
 
 def plot_standard_bar(data_series, x_label, y_label, title=None, color=lcm_light_green):
+    """Barras horizontais: nomes longos ficam legíveis e o número aparece
+    ao lado de cada barra. A altura cresce com a quantidade de itens."""
     if data_series.empty:
         st.warning("Sem dados para gerar gráfico.")
         return None
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    bars = ax.bar(data_series.index, data_series.values, color=color,
-                  edgecolor='black', linewidth=1.2, zorder=3)
-    ax.set_ylabel(y_label, fontsize=10)
-    ax.set_title(title if title else "", fontsize=12, fontweight='bold')
-    plt.xticks(rotation=90, ha='center', fontsize=9)
+    n = len(data_series)
+    fig, ax = plt.subplots(figsize=(12, max(4.5, 0.42 * n + 1.5)))
+    nomes = [str(i) for i in data_series.index]
+    valores = data_series.values
+    bars = ax.barh(nomes, valores, color=color, edgecolor='black',
+                   linewidth=1.0, zorder=3)
+    ax.invert_yaxis()  # maior valor no topo
+    ax.set_xlabel(y_label, fontsize=11)
+    ax.set_title(title if title else "", fontsize=13, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=11)
+    ax.tick_params(axis='x', labelsize=10)
+    ax.grid(axis='x', alpha=0.25, zorder=0)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+    ax.set_xlim(0, max(valores.max() * 1.12, 1))
 
     for bar in bars:
-        height = bar.get_height()
-        ax.annotate(f'{int(height)}', xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontsize=9, fontweight='bold')
+        w = bar.get_width()
+        ax.annotate(f'{int(w)}', xy=(w, bar.get_y() + bar.get_height() / 2),
+                    xytext=(4, 0), textcoords="offset points",
+                    ha='left', va='center', fontsize=11, fontweight='bold')
     plt.tight_layout()
     return fig
 
@@ -816,21 +839,22 @@ def serie(d):
 
 
 def tabela_e_grafico(s, x_label, y_label, titulo=None):
-    c1, c2 = st.columns([2, 3])
-    # Nome vira coluna normal (largura controlada) para o número de chamados
-    # nunca ficar escondido; altura ajustada ao nº de linhas (sem rolagem).
+    c1, c2 = st.columns([2, 5])
+    # Colunas com largura fixa que cabem juntas: o nome é cortado (…) se for
+    # grande, mas o número de chamados SEMPRE fica visível.
     df_tab = s.rename("Chamados").rename_axis(x_label).reset_index()
     c1.dataframe(
         df_tab,
         hide_index=True,
         use_container_width=True,
-        height=min(38 + 35 * len(df_tab), 1200),
+        height=min(38 + 35 * len(df_tab), 900),
         column_config={
-            x_label: st.column_config.TextColumn(x_label, width="large"),
+            x_label: st.column_config.TextColumn(x_label, width="medium"),
             "Chamados": st.column_config.NumberColumn("Chamados", width="small"),
         },
     )
-    mostrar(plot_standard_bar(s, x_label, y_label, titulo), c2)
+    mostrar(plot_standard_bar(s, x_label, y_label, titulo), c2,
+            titulo=titulo or f"{x_label} - Chamados")
 
 
 tem_dados = bool(resumo) and resumo.get('total', 0) > 0 and bool(resumo.get('por_categoria'))
