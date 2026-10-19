@@ -59,51 +59,73 @@ lcm_gray = '#9E9E9E'
 # =====================================================================
 _dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
 
+# Pop-up quase em tela cheia
+_CSS_POPUP = """
+<style>
+div[role="dialog"] { width: 96vw !important; max-width: 96vw !important; }
+div[role="dialog"] img { max-height: 82vh; object-fit: contain; }
+</style>
+"""
+
+
+def _fig_b64(fig, dpi=130):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
 
 def _img_html(b64):
     return f'<img src="data:image/png;base64,{b64}" style="width:100%;height:auto;">'
 
 
-def mostrar(fig, container=st, titulo="Gráfico"):
-    """Renderiza o gráfico embutido em base64 (sem o servidor de mídia do
-    Streamlit, que causava a imagem quebrada) e oferece botão para ampliar
-    em pop-up."""
+def mostrar(fig, container=st, titulo="Gráfico", fig_ampliado=None):
+    """Gráfico em tamanho padrão (embutido em base64, sem o servidor de mídia
+    do Streamlit) + botão que abre a versão ampliada em pop-up."""
     if fig is None:
         return
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
-    plt.close(fig)
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    b64 = _fig_b64(fig)
+    b64_amp = _fig_b64(fig_ampliado) if fig_ampliado is not None else b64
     container.markdown(_img_html(b64), unsafe_allow_html=True)
 
     if _dialog is not None:
-        chave = "amp_" + str(abs(hash(b64)))
-
         @_dialog(titulo, width="large")
         def _popup():
-            st.markdown(_img_html(b64), unsafe_allow_html=True)
+            st.markdown(_CSS_POPUP, unsafe_allow_html=True)
+            st.markdown(_img_html(b64_amp), unsafe_allow_html=True)
 
-        if container.button("🔍 Ampliar gráfico", key=chave):
+        if container.button("🔍 Ampliar gráfico", key="amp_" + str(abs(hash(b64_amp)))):
             _popup()
 
 
-def plot_standard_bar(data_series, x_label, y_label, title=None, color=lcm_light_green):
-    """Barras horizontais: nomes longos ficam legíveis e o número aparece
-    ao lado de cada barra. A altura cresce com a quantidade de itens."""
+def plot_standard_bar(data_series, x_label, y_label, title=None,
+                      color=lcm_light_green, max_itens=None):
+    """Barras horizontais com o valor ao lado de cada barra.
+    max_itens=N -> tamanho PADRÃO fixo (mostra só os N maiores).
+    max_itens=None -> mostra todos, altura cresce com a quantidade (pop-up)."""
     if data_series.empty:
         st.warning("Sem dados para gerar gráfico.")
         return None
 
-    n = len(data_series)
-    fig, ax = plt.subplots(figsize=(12, max(4.5, 0.42 * n + 1.5)))
+    if max_itens:
+        data_series = data_series.head(max_itens)
+        fig, ax = plt.subplots(figsize=(10, 5))
+        slots = max_itens            # espaço fixo: barras sempre com a mesma espessura
+        fs_nome, fs_valor = 11, 11
+    else:
+        n = len(data_series)
+        fig, ax = plt.subplots(figsize=(16, max(6, 0.42 * n + 1.5)))
+        slots = n
+        fs_nome, fs_valor = 12, 12
+
     nomes = [str(i) for i in data_series.index]
     valores = data_series.values
     bars = ax.barh(nomes, valores, color=color, edgecolor='black',
                    linewidth=1.0, zorder=3)
-    ax.invert_yaxis()  # maior valor no topo
+    ax.set_ylim(slots - 0.5, -0.5)   # maior valor no topo
     ax.set_xlabel(y_label, fontsize=11)
     ax.set_title(title if title else "", fontsize=13, fontweight='bold')
-    ax.tick_params(axis='y', labelsize=11)
+    ax.tick_params(axis='y', labelsize=fs_nome)
     ax.tick_params(axis='x', labelsize=10)
     ax.grid(axis='x', alpha=0.25, zorder=0)
     ax.spines['top'].set_visible(False)
@@ -114,7 +136,7 @@ def plot_standard_bar(data_series, x_label, y_label, title=None, color=lcm_light
         w = bar.get_width()
         ax.annotate(f'{int(w)}', xy=(w, bar.get_y() + bar.get_height() / 2),
                     xytext=(4, 0), textcoords="offset points",
-                    ha='left', va='center', fontsize=11, fontweight='bold')
+                    ha='left', va='center', fontsize=fs_valor, fontweight='bold')
     plt.tight_layout()
     return fig
 
@@ -129,7 +151,7 @@ def plot_comparison_bar(df_grouped, title):
     x = np.arange(len(meses))
     width = 0.8 / max(len(anos), 1)
     cores = {2024: '#D5D5D5', 2025: lcm_gray, 2026: lcm_light_green}
-    fig, ax = plt.subplots(figsize=(14, 7))
+    fig, ax = plt.subplots(figsize=(11, 5.5))
 
     for i, ano in enumerate(anos):
         offset = (i - (len(anos) - 1) / 2) * width
@@ -160,7 +182,7 @@ def plot_evolution_line_bar(df_grouped, title):
     if df_grouped.empty:
         return None
 
-    fig, ax = plt.subplots(figsize=(14, 7))
+    fig, ax = plt.subplots(figsize=(11, 5.5))
     df_grouped = df_grouped.reindex(MESES_ABREV, fill_value=0)
     x = np.arange(len(MESES_ABREV))
     colors = [lcm_light_green, '#4D8337', '#2E521F', '#A3D681', lcm_gray, '#B4E59C']
@@ -838,23 +860,34 @@ def serie(d):
     return pd.Series(d, dtype='int64').sort_values(ascending=False)
 
 
+ITENS_NO_GRAFICO = 10    # tamanho padrão: o gráfico mostra os N maiores; o pop-up mostra todos
+ALTURA_PADRAO = 420      # altura (px) da tabela, alinhada com o gráfico
+
+
 def tabela_e_grafico(s, x_label, y_label, titulo=None):
-    c1, c2 = st.columns([2, 5])
-    # Colunas com largura fixa que cabem juntas: o nome é cortado (…) se for
-    # grande, mas o número de chamados SEMPRE fica visível.
+    c1, c2 = st.columns([2, 3])
+    # Nome com largura "medium" + chamados "small": cabem juntos, o nome é
+    # cortado (…) se for grande, mas o número SEMPRE fica visível.
     df_tab = s.rename("Chamados").rename_axis(x_label).reset_index()
     c1.dataframe(
         df_tab,
         hide_index=True,
         use_container_width=True,
-        height=min(38 + 35 * len(df_tab), 900),
+        height=min(38 + 35 * len(df_tab), ALTURA_PADRAO),
         column_config={
             x_label: st.column_config.TextColumn(x_label, width="medium"),
             "Chamados": st.column_config.NumberColumn("Chamados", width="small"),
         },
     )
-    mostrar(plot_standard_bar(s, x_label, y_label, titulo), c2,
-            titulo=titulo or f"{x_label} - Chamados")
+    mostrar(
+        plot_standard_bar(s, x_label, y_label, titulo, max_itens=ITENS_NO_GRAFICO),
+        c2,
+        titulo=titulo or f"{x_label} - Chamados",
+        fig_ampliado=plot_standard_bar(s, x_label, y_label, titulo),
+    )
+    if len(s) > ITENS_NO_GRAFICO:
+        c2.caption(f"Mostrando os {ITENS_NO_GRAFICO} maiores de {len(s)}. "
+                   f"Clique em Ampliar para ver todos.")
 
 
 tem_dados = bool(resumo) and resumo.get('total', 0) > 0 and bool(resumo.get('por_categoria'))
